@@ -1,5 +1,20 @@
 import { ProxyParser } from '../parsers/index.js';
 import { createStableProviderName, deepCopy, tryDecodeSubscriptionLines, decodeBase64 } from '../utils.js';
+
+// --- my-sub fork patch: drop airport notice pseudo-nodes by name ---
+// Airports inject informational entries (quota/expiry/tutorial notices)
+// as fake nodes. Any node whose name contains one of these keywords is
+// filtered out for every output format in BaseConfigBuilder.build().
+const BLOCKED_PROXY_NAME_KEYWORDS = [
+    '到期', '剩餘', '剩余', '重置', '無效', '无效', '失效', '教程',
+    '流量', '公告', '官網', '官网', '客戶端', '客户端', '不支持',
+    '更新', '重新', '複製', '复制', '顯示', '显示', '太舊', '太旧'
+];
+
+export function isBlockedProxyName(name) {
+    if (!name || typeof name !== 'string') return false;
+    return BLOCKED_PROXY_NAME_KEYWORDS.some(keyword => name.includes(keyword));
+}
 import { createTranslator } from '../i18n/index.js';
 import { generateRules, getOutbounds, PREDEFINED_RULE_SETS } from '../config/index.js';
 
@@ -22,7 +37,8 @@ export class BaseConfigBuilder {
 
     async build() {
         const customItems = await this.parseCustomItems();
-        this.addCustomItems(customItems);
+        const visibleItems = customItems.filter(item => !isBlockedProxyName(item?.name || item?.tag));
+        this.addCustomItems(visibleItems);
         this.addSelectors();
         return this.formatConfig();
     }
