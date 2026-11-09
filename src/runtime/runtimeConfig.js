@@ -39,6 +39,8 @@ export function normalizeRuntime(runtime = {}) {
         assetFetcher: runtime.assetFetcher ?? null,
         logger: runtime.logger ?? console,
         gateKey: runtime.gateKey ?? null,
+        resToken: runtime.resToken ?? null,
+        resLink: runtime.resLink ?? null,
         config: {
             configTtlSeconds: runtime.config?.configTtlSeconds ?? DEFAULTS.configTtlSeconds,
             shortLinkTtlSeconds: runtime.config?.shortLinkTtlSeconds ?? null
