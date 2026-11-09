@@ -81,6 +81,7 @@ export function createApp(bindings = {}) {
     // three client formats. Bearer model matches the short codes: the
     // RES_TOKEN path segment is the secret; any other token gets 403.
     const RES_NAME = '美国住宅-IPRoyal';
+    const RES_FLEX_NAME = '美国住宅-任选前置';
     const FRONT_NAME = '前置-VLESS';
     const resAuthorized = (c) => Boolean(runtime.resToken && runtime.resLink) && c.req.param('token') === runtime.resToken;
     const resUrl = () => { try { return new URL(runtime.resLink); } catch { return null; } };
@@ -127,6 +128,15 @@ export function createApp(bindings = {}) {
         for (const o of cfgObj.outbounds) {
             if (o.type === 'selector' && RES_GROUPS.includes(o.tag) && Array.isArray(o.outbounds) && !o.outbounds.includes(RES_NAME)) o.outbounds.push(RES_NAME);
         }
+        // Flexible-front variant: detour through the main selector so any
+        // node chosen there becomes the first hop. Its tag is kept OUT of
+        // that selector's members to avoid a detour loop.
+        if (!cfgObj.outbounds.some(o => o.tag === RES_FLEX_NAME)) {
+            cfgObj.outbounds.push({ type: 'http', tag: RES_FLEX_NAME, server: u.hostname, server_port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), detour: '🚀 节点选择' });
+            for (const o of cfgObj.outbounds) {
+                if (o.type === 'selector' && ['🌐 非中国', '🐟 漏网之鱼'].includes(o.tag) && Array.isArray(o.outbounds) && !o.outbounds.includes(RES_FLEX_NAME)) o.outbounds.push(RES_FLEX_NAME);
+            }
+        }
     };
     const injectResidentialClash = (cfgObj) => {
         const u = resUrl(); if (!u || !Array.isArray(cfgObj?.proxies)) return;
@@ -143,6 +153,15 @@ export function createApp(bindings = {}) {
         cfgObj.proxies.push(http);
         for (const g of cfgObj['proxy-groups'] || []) {
             if (g.type === 'select' && RES_GROUPS.includes(g.name) && Array.isArray(g.proxies) && !g.proxies.includes(RES_NAME)) g.proxies.push(RES_NAME);
+        }
+        // Flexible-front variant: dialer-proxy points at the main group so
+        // whichever node is selected there becomes the first hop. Kept OUT
+        // of that group's members to avoid a dialer loop.
+        if (!cfgObj.proxies.some(p => p.name === RES_FLEX_NAME)) {
+            cfgObj.proxies.push({ name: RES_FLEX_NAME, type: 'http', server: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), 'dialer-proxy': '🚀 节点选择' });
+            for (const g of cfgObj['proxy-groups'] || []) {
+                if (g.type === 'select' && ['🌐 非中国', '🐟 漏网之鱼'].includes(g.name) && Array.isArray(g.proxies) && !g.proxies.includes(RES_FLEX_NAME)) g.proxies.push(RES_FLEX_NAME);
+            }
         }
     };
 
