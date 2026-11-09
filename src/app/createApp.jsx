@@ -18,7 +18,7 @@ import { ServiceError, MissingDependencyError } from '../services/errors.js';
 import { normalizeRuntime } from '../runtime/runtimeConfig.js';
 import { PREDEFINED_RULE_SETS, SING_BOX_CONFIG, SING_BOX_CONFIG_V1_11, generateSubconverterConfig } from '../config/index.js';
 
-const DEFAULT_USER_AGENT = 'curl/7.74.0';
+const DEFAULT_USER_AGENT = 'v2rayN/6.55';
 
 export function createApp(bindings = {}) {
     const runtime = normalizeRuntime(bindings);
@@ -35,6 +35,23 @@ export function createApp(bindings = {}) {
         c.set('lang', lang);
         c.set('t', createTranslator(lang));
         await next();
+    });
+
+    // --- my-sub hardening gate (private fork patch) ---
+    // Only short-code subscription routes are public. The conversion
+    // endpoints they redirect to require the GATE_KEY binding value,
+    // which the redirect handler appends server-side. Everything else
+    // (converter UI, /shorten-v2, POST /config, /resolve, /subconverter)
+    // is closed to the public.
+    app.use('*', async (c, next) => {
+        const path = new URL(c.req.url).pathname;
+        if (/^\/(b|c|x|s)\/[^/]+$/.test(path) || path === '/favicon.ico') return next();
+        if (/^\/(singbox|clash|surge|xray)$/.test(path)) {
+            const gate = c.req.query('gate');
+            if (gate && runtime.gateKey && gate === runtime.gateKey) return next();
+            return c.text('Forbidden', 403);
+        }
+        return c.text('Forbidden', 403);
     });
 
     app.get('/', (c) => {
@@ -340,7 +357,10 @@ export function createApp(bindings = {}) {
             if (!originalParam) return c.text('Short URL not found', 404);
 
             const url = new URL(c.req.url);
-            return c.redirect(`${url.origin}/${prefix}${originalParam}`);
+            const gateSuffix = runtime.gateKey
+                ? `${originalParam.startsWith('?') ? '&' : '?'}gate=${encodeURIComponent(runtime.gateKey)}`
+                : '';
+            return c.redirect(`${url.origin}/${prefix}${originalParam}${gateSuffix}`);
         } catch (error) {
             return handleError(c, error, runtime.logger);
         }
