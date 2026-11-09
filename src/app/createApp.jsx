@@ -10,7 +10,28 @@ import { SingboxConfigBuilder } from '../builders/SingboxConfigBuilder.js';
 import { ClashConfigBuilder } from '../builders/ClashConfigBuilder.js';
 import { SurgeConfigBuilder } from '../builders/SurgeConfigBuilder.js';
 import { createTranslator, resolveLanguage } from '../i18n/index.js';
-import { encodeBase64, tryDecodeSubscriptionLines } from '../utils.js';
+import { encodeBase64, decodeBase64, tryDecodeSubscriptionLines } from '../utils.js';
+import { isBlockedProxyName } from '../builders/BaseConfigBuilder.js';
+
+// --- my-sub fork patch: name of a raw share link for notice filtering ---
+function shareLinkName(link) {
+    if (link.startsWith('vmess://')) {
+        try {
+            const obj = JSON.parse(decodeBase64(link.slice('vmess://'.length)));
+            return obj?.ps || '';
+        } catch {
+            return '';
+        }
+    }
+    const hashIdx = link.indexOf('#');
+    if (hashIdx === -1) return '';
+    const raw = link.slice(hashIdx + 1);
+    try {
+        return decodeURIComponent(raw);
+    } catch {
+        return raw;
+    }
+}
 import { APP_NAME, APP_SUBTITLE } from '../constants.js';
 import { ShortLinkService } from '../services/shortLinkService.js';
 import { ConfigStorageService } from '../services/configStorageService.js';
@@ -314,7 +335,8 @@ export function createApp(bindings = {}) {
             }
         }
 
-        const finalString = finalProxyList.join('\n');
+        const visibleProxyList = finalProxyList.filter(link => !isBlockedProxyName(shareLinkName(link)));
+        const finalString = visibleProxyList.join('\n');
         if (!finalString) {
             return c.text('Missing config parameter', 400);
         }
