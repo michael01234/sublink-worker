@@ -66,7 +66,7 @@ export function createApp(bindings = {}) {
     // is closed to the public.
     app.use('*', async (c, next) => {
         const path = new URL(c.req.url).pathname;
-        if (/^\/(b|c|x|s)\/[^/]+$/.test(path) || /^\/r\/[^/]+(\/(c|b))?$/.test(path) || path === '/favicon.ico') return next();
+        if (/^\/(b|c|x|s)\/[^/]+$/.test(path) || /^\/r\/[^/]+(\/(c|b|v))?$/.test(path) || path === '/favicon.ico') return next();
         if (/^\/(singbox|clash|surge|xray)$/.test(path)) {
             const gate = c.req.query('gate');
             if (gate && runtime.gateKey && gate === runtime.gateKey) return next();
@@ -81,20 +81,121 @@ export function createApp(bindings = {}) {
     // three client formats. Bearer model matches the short codes: the
     // RES_TOKEN path segment is the secret; any other token gets 403.
     const RES_NAME = '美国住宅-IPRoyal';
+    const FRONT_NAME = '前置-VLESS';
     const resAuthorized = (c) => Boolean(runtime.resToken && runtime.resLink) && c.req.param('token') === runtime.resToken;
     const resUrl = () => { try { return new URL(runtime.resLink); } catch { return null; } };
+    // Optional chain front: a vless share link (RES_FRONT binding). When it
+    // parses, the Clash and sing-box variants chain the residential HTTP
+    // proxy behind it (dialer-proxy / detour) so the slow direct first leg
+    // is replaced by the user's tuned front line. vless+reality only.
+    const frontUrl = () => {
+        if (!runtime.resFront) return null;
+        try {
+            const u = new URL(runtime.resFront);
+            return u.protocol === 'vless:' ? u : null;
+        } catch { return null; }
+    };
+    const frontParams = (u) => ({
+        uuid: decodeURIComponent(u.username),
+        host: u.hostname,
+        port: Number(u.port),
+        flow: u.searchParams.get('flow') || '',
+        sni: u.searchParams.get('sni') || '',
+        fp: u.searchParams.get('fp') || 'chrome',
+        pbk: u.searchParams.get('pbk') || '',
+        sid: u.searchParams.get('sid') || ''
+    });
+    // Main-subscription injection: for the owner's own subscription only
+    // (identified by his front server address inside the config string),
+    // add the chained residential node into the built Clash / sing-box
+    // configs, so it ships inside the main subscription itself.
+    const isOwnSubscription = (configParam) => typeof configParam === 'string' && configParam.includes('66.154.126.57');
+    const RES_GROUPS = ['🚀 节点选择', '🌐 非中国', '🐟 漏网之鱼'];
+    const injectResidentialSingbox = (cfgObj) => {
+        const u = resUrl(); if (!u || !Array.isArray(cfgObj?.outbounds)) return;
+        if (cfgObj.outbounds.some(o => o.tag === RES_NAME)) return;
+        const http = { type: 'http', tag: RES_NAME, server: u.hostname, server_port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) };
+        const f = frontUrl();
+        if (f) {
+            const p = frontParams(f);
+            if (!cfgObj.outbounds.some(o => o.tag === 'front-vless')) {
+                cfgObj.outbounds.push({ type: 'vless', tag: 'front-vless', server: p.host, server_port: p.port, uuid: p.uuid, flow: p.flow, tls: { enabled: true, server_name: p.sni, utls: { enabled: true, fingerprint: p.fp }, reality: { enabled: true, public_key: p.pbk, short_id: p.sid } } });
+            }
+            http.detour = 'front-vless';
+        }
+        cfgObj.outbounds.push(http);
+        for (const o of cfgObj.outbounds) {
+            if (o.type === 'selector' && RES_GROUPS.includes(o.tag) && Array.isArray(o.outbounds) && !o.outbounds.includes(RES_NAME)) o.outbounds.push(RES_NAME);
+        }
+    };
+    const injectResidentialClash = (cfgObj) => {
+        const u = resUrl(); if (!u || !Array.isArray(cfgObj?.proxies)) return;
+        if (cfgObj.proxies.some(p => p.name === RES_NAME)) return;
+        const http = { name: RES_NAME, type: 'http', server: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) };
+        const f = frontUrl();
+        if (f) {
+            const p = frontParams(f);
+            if (!cfgObj.proxies.some(x => x.name === FRONT_NAME)) {
+                cfgObj.proxies.push({ name: FRONT_NAME, type: 'vless', server: p.host, port: p.port, uuid: p.uuid, network: 'tcp', udp: true, tls: true, flow: p.flow, servername: p.sni, 'client-fingerprint': p.fp, 'reality-opts': { 'public-key': p.pbk, 'short-id': p.sid } });
+            }
+            http['dialer-proxy'] = FRONT_NAME;
+        }
+        cfgObj.proxies.push(http);
+        for (const g of cfgObj['proxy-groups'] || []) {
+            if (g.type === 'select' && RES_GROUPS.includes(g.name) && Array.isArray(g.proxies) && !g.proxies.includes(RES_NAME)) g.proxies.push(RES_NAME);
+        }
+    };
+
     app.get('/r/:token', (c) => {
         if (!resAuthorized(c)) return c.text('Forbidden', 403);
         return c.text(btoa(runtime.resLink), 200, { 'Content-Type': 'text/plain; charset=utf-8' });
     });
+    app.get('/r/:token/v', (c) => {
+        // v2rayN variant: v2rayN cannot parse http:// share links at all
+        // (no Fmt handler; upstream issue #5332), but its subscription
+        // importer accepts a full sing-box JSON as a custom-config profile.
+        if (!resAuthorized(c)) return c.text('Forbidden', 403);
+        const u = resUrl(); if (!u) return c.text('Forbidden', 403);
+        return c.json({
+            log: { level: 'warn', timestamp: true },
+            dns: {
+                servers: [
+                    { type: 'https', tag: 'remote', server: '8.8.8.8', detour: 'res-us' },
+                    { type: 'local', tag: 'local' }
+                ],
+                final: 'remote',
+                strategy: 'ipv4_only'
+            },
+            inbounds: [
+                { type: 'mixed', tag: 'mixed-in', listen: '127.0.0.1', listen_port: 10808 }
+            ],
+            outbounds: [
+                { type: 'http', tag: 'res-us', server: u.hostname, server_port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) },
+                { type: 'direct', tag: 'direct' }
+            ],
+            route: {
+                rules: [{ ip_is_private: true, outbound: 'direct' }],
+                final: 'res-us'
+            }
+        });
+    });
     app.get('/r/:token/c', (c) => {
         if (!resAuthorized(c)) return c.text('Forbidden', 403);
         const u = resUrl(); if (!u) return c.text('Forbidden', 403);
+        const f = frontUrl();
+        const proxies = [];
+        let dialer = '';
+        if (f) {
+            const p = frontParams(f);
+            proxies.push(`  - {name: "${FRONT_NAME}", type: vless, server: ${p.host}, port: ${p.port}, uuid: ${p.uuid}, network: tcp, tls: true, udp: true, flow: ${p.flow}, servername: ${p.sni}, client-fingerprint: ${p.fp}, reality-opts: {public-key: ${p.pbk}, short-id: ${p.sid}}}`);
+            dialer = `, dialer-proxy: "${FRONT_NAME}"`;
+        }
+        proxies.push(`  - {name: "${RES_NAME}", type: http, server: ${u.hostname}, port: ${u.port}, username: ${decodeURIComponent(u.username)}, password: ${decodeURIComponent(u.password)}${dialer}}`);
         const yaml = [
             'mixed-port: 7890',
             'mode: rule',
             'proxies:',
-            `  - {name: "${RES_NAME}", type: http, server: ${u.hostname}, port: ${u.port}, username: ${decodeURIComponent(u.username)}, password: ${decodeURIComponent(u.password)}}`,
+            ...proxies,
             'proxy-groups:',
             `  - {name: PROXY, type: select, proxies: ["${RES_NAME}", DIRECT]}`,
             'rules:',
@@ -107,13 +208,19 @@ export function createApp(bindings = {}) {
     app.get('/r/:token/b', (c) => {
         if (!resAuthorized(c)) return c.text('Forbidden', 403);
         const u = resUrl(); if (!u) return c.text('Forbidden', 403);
-        return c.json({
-            outbounds: [
-                { type: 'http', tag: RES_NAME, server: u.hostname, server_port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) },
-                { type: 'direct', tag: 'direct' }
-            ],
-            route: { final: RES_NAME }
-        });
+        const outbounds = [];
+        const http = { type: 'http', tag: RES_NAME, server: u.hostname, server_port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) };
+        const f = frontUrl();
+        if (f) {
+            const p = frontParams(f);
+            outbounds.push({
+                type: 'vless', tag: 'front-vless', server: p.host, server_port: p.port, uuid: p.uuid, flow: p.flow,
+                tls: { enabled: true, server_name: p.sni, utls: { enabled: true, fingerprint: p.fp }, reality: { enabled: true, public_key: p.pbk, short_id: p.sid } }
+            });
+            http.detour = 'front-vless';
+        }
+        outbounds.push(http, { type: 'direct', tag: 'direct' });
+        return c.json({ outbounds, route: { final: RES_NAME } });
     });
 
     app.get('/', (c) => {
@@ -193,6 +300,7 @@ export function createApp(bindings = {}) {
                 includeAutoSelect
             );
             await builder.build();
+            if (isOwnSubscription(config)) injectResidentialSingbox(builder.config);
             const userinfo = builder.getSubscriptionUserinfo();
             if (userinfo) {
                 c.header('subscription-userinfo', userinfo);
@@ -241,6 +349,7 @@ export function createApp(bindings = {}) {
                 includeAutoSelect
             );
             await builder.build();
+            if (isOwnSubscription(config)) injectResidentialClash(builder.config);
             const userinfo = builder.getSubscriptionUserinfo();
             const headers = { 'Content-Type': 'text/yaml; charset=utf-8' };
             if (userinfo) {
