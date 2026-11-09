@@ -66,13 +66,54 @@ export function createApp(bindings = {}) {
     // is closed to the public.
     app.use('*', async (c, next) => {
         const path = new URL(c.req.url).pathname;
-        if (/^\/(b|c|x|s)\/[^/]+$/.test(path) || path === '/favicon.ico') return next();
+        if (/^\/(b|c|x|s)\/[^/]+$/.test(path) || /^\/r\/[^/]+(\/(c|b))?$/.test(path) || path === '/favicon.ico') return next();
         if (/^\/(singbox|clash|surge|xray)$/.test(path)) {
             const gate = c.req.query('gate');
             if (gate && runtime.gateKey && gate === runtime.gateKey) return next();
             return c.text('Forbidden', 403);
         }
         return c.text('Forbidden', 403);
+    });
+
+    // --- my-sub residential direct-distribution route (private fork patch) ---
+    // Serves a single HTTP proxy endpoint (credentials in the RES_LINK
+    // plain_text binding, deploy-time only) as a ready-made subscription in
+    // three client formats. Bearer model matches the short codes: the
+    // RES_TOKEN path segment is the secret; any other token gets 403.
+    const RES_NAME = '美国住宅-IPRoyal';
+    const resAuthorized = (c) => Boolean(runtime.resToken && runtime.resLink) && c.req.param('token') === runtime.resToken;
+    const resUrl = () => { try { return new URL(runtime.resLink); } catch { return null; } };
+    app.get('/r/:token', (c) => {
+        if (!resAuthorized(c)) return c.text('Forbidden', 403);
+        return c.text(btoa(runtime.resLink), 200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    });
+    app.get('/r/:token/c', (c) => {
+        if (!resAuthorized(c)) return c.text('Forbidden', 403);
+        const u = resUrl(); if (!u) return c.text('Forbidden', 403);
+        const yaml = [
+            'mixed-port: 7890',
+            'mode: rule',
+            'proxies:',
+            `  - {name: "${RES_NAME}", type: http, server: ${u.hostname}, port: ${u.port}, username: ${decodeURIComponent(u.username)}, password: ${decodeURIComponent(u.password)}}`,
+            'proxy-groups:',
+            `  - {name: PROXY, type: select, proxies: ["${RES_NAME}", DIRECT]}`,
+            'rules:',
+            '  - GEOIP,CN,DIRECT',
+            '  - MATCH,PROXY',
+            ''
+        ].join('\n');
+        return c.text(yaml, 200, { 'Content-Type': 'text/yaml; charset=utf-8' });
+    });
+    app.get('/r/:token/b', (c) => {
+        if (!resAuthorized(c)) return c.text('Forbidden', 403);
+        const u = resUrl(); if (!u) return c.text('Forbidden', 403);
+        return c.json({
+            outbounds: [
+                { type: 'http', tag: RES_NAME, server: u.hostname, server_port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password) },
+                { type: 'direct', tag: 'direct' }
+            ],
+            route: { final: RES_NAME }
+        });
     });
 
     app.get('/', (c) => {
